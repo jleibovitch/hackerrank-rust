@@ -1,4 +1,5 @@
 use std::io::stdin;
+use rand::Rng;
 
 fn main() {
   let mut input_buffer = String::new();
@@ -43,6 +44,10 @@ fn get_next_move(
     player_2_board: player_2_marbles,
     player_2_score: player_2_mancala,
   };
+
+  let mcts = MCTS::new(board, player_id);
+  mcts.start_search();
+
 }
 
 #[derive(Clone)]
@@ -147,4 +152,179 @@ impl Board {
       (false, 0)
     }
   }
+}
+
+struct Node {
+
+  explored_children: Vec<(usize, usize)>,
+  unexplored_children: Vec<usize>,
+  parent: Option<usize>,
+  node_index: usize,
+  state: Board,
+  wins: i32,
+  losses: i32,
+  visits: u32
+}
+
+impl Node {
+
+  pub fn new(parent: Option<usize>, state: Board, node_index: usize) -> Self {
+    Node{
+      unexplored_children: state.get_valid_moves(),
+      parent,
+      state,
+      node_index,
+      explored_children: Vec::new(),
+      visits: 0,
+      losses: 0,
+      wins: 0,
+    }
+  }
+
+  fn best_uct(&self, nodes: &Vec<Box<Node>>) -> usize {
+    let current_node = &nodes[self.node_index];
+    let children = current_node.explored_children.to_vec();
+
+    let ucts: Vec<(usize, f64)> = children.into_iter().map(|x| {
+      let node = &nodes[x.0];
+      (x.0, (node.wins - node.losses) as f64 / node.visits as f64 + (2_f64).sqrt() * ((current_node.visits as f64).ln() / node.visits as f64).sqrt())
+    }).collect();
+
+    let mut best_node = 0;
+    let mut best_val: f64 = -10000_f64;
+    for i in 0..ucts.len() {
+      if ucts[i].1 > best_val {
+        best_node = ucts[i].0;
+        best_val = ucts[i].1;
+      }
+    }
+
+    best_node
+  }
+
+  fn expand(&mut self) -> Option<(Board, usize)> {
+    let next_move = self.unexplored_children.pop()?;
+    Some((self.state.update_board(next_move), next_move))
+  }
+}
+
+// #[derive(Default)]
+struct Tree {
+  nodes: Vec<Box<Node>>
+}
+
+impl Tree {
+
+  pub fn new(root_state: Board) -> Self {
+    let root = Box::new(Node::new(None, root_state, 0));
+    Tree{
+      nodes: vec![root]
+    }
+  }
+
+  fn add_child(&mut self, state: Board, parent: Option<usize>) -> usize {
+
+    let node_index = self.nodes.len();
+    let node = Box::new(Node::new(parent, state, node_index));
+    self.nodes.push(node);
+
+    node_index
+
+  }
+}
+
+struct MCTS {
+  tree: Tree,
+  current_player: u32
+}
+
+impl MCTS {
+  pub fn new(root_state: Board, current_player: u32) -> Self {
+
+    MCTS{
+      tree: Tree::new(root_state),
+      current_player,
+    }
+
+  }
+
+  fn start_search(mut self) {
+
+    for _ in 0..100000 {
+      let leaf = self.traverse();
+      let result = self.simulate(leaf);
+      self.backpropogate(leaf, result);
+    }
+    
+    let (mut best_child, mut max_visits) = (0,0);
+    // println!("{:?}", self.tree.nodes[0].explored_children);
+    for (child_index, move_index) in self.tree.nodes[0].explored_children.to_vec().into_iter() {
+      if self.tree.nodes[child_index].visits > max_visits {
+        best_child = move_index;
+        max_visits = self.tree.nodes[child_index].visits;
+      }
+    }
+
+    println!("{}", best_child+1);
+  }
+
+  fn traverse(&mut self) -> usize {
+
+    let mut current_node = 0;
+
+
+
+    while self.tree.nodes[current_node].unexplored_children.len() == 0 {
+
+      if self.tree.nodes[current_node].explored_children.len() == 0 {
+        return current_node
+      }
+
+      current_node = self.tree.nodes[current_node].best_uct(&self.tree.nodes);
+    }
+
+    let (next_state, move_index) = self.tree.nodes[current_node].expand().unwrap();
+    let child_index = self.tree.add_child(next_state, Some(current_node));
+    self.tree.nodes[current_node].explored_children.push((child_index, move_index));
+    child_index
+
+  }
+
+  fn simulate(&self, leaf: usize) -> bool {
+
+    let mut current_state = self.tree.nodes[leaf].state.clone();
+    let mut rng = rand::thread_rng();
+
+    let (mut game_over, mut winner) = current_state.game_over();
+    while !game_over {
+      let valid_moves = current_state.get_valid_moves();
+      let next_board = current_state.update_board(valid_moves[rng.gen_range(0, valid_moves.len())]);
+      let results = next_board.game_over();
+      game_over = results.0;
+      winner = results.1;
+      current_state = next_board
+    }
+
+    winner == self.current_player
+
+  }
+
+  fn backpropogate(&mut self, leaf: usize, result: bool) {
+
+    let mut current_node = Some(leaf);
+
+    while current_node.is_some() {
+      let node = &mut self.tree.nodes[current_node.unwrap()];
+      node.visits+=1;
+      if result {
+        node.wins += 1;
+      } else {
+        node.losses += 1;
+      }
+
+      current_node = node.parent;
+    }
+
+  }
+
 }
